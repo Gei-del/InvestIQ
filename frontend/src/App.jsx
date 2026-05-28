@@ -4,6 +4,7 @@ import HomePage from './pages/HomePage'
 import AssessmentPage from './pages/AssessmentPage'
 import ResultPage from './pages/ResultPage'
 import DashboardPage from './pages/DashboardPage'
+import AdvisorPage from './pages/AdvisorPage'
 
 export default function App() {
   return (
@@ -15,6 +16,7 @@ export default function App() {
           <Route path="/assessment" element={<AssessmentPage />} />
           <Route path="/result" element={<ResultPage />} />
           <Route path="/dashboard" element={<DashboardPage />} />
+          <Route path="/advisor" element={<AdvisorPage />} />
           {/* 404 */}
           <Route
             path="*"

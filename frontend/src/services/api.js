@@ -64,4 +64,32 @@ export const getHealth = async () => {
   return response.data
 }
 
+/**
+ * POST /api/chat
+ * @param {string} message - User message
+ * @param {Object} context - User profile context
+ */
+export const chatWithAdvisor = async (message, context = null) => {
+  const response = await api.post('/api/chat', { message, context })
+  return response.data
+}
+
+/**
+ * POST /api/calculate-goal
+ * @param {Object} data - { meta_valor, plazo_anios, tasa_anual }
+ */
+export const calculateGoal = async (data) => {
+  const response = await api.post('/api/calculate-goal', data)
+  return response.data
+}
+
+/**
+ * POST /api/compare-scenarios
+ * @param {Array} scenarios - Array of simulation scenarios to compare
+ */
+export const compareScenarios = async (scenarios) => {
+  const response = await api.post('/api/compare-scenarios', { scenarios })
+  return response.data
+}
+
 export default api
