@@ -3,8 +3,7 @@ import { Link, useLocation } from 'react-router-dom'
 const links = [
   { to: '/', label: 'Inicio' },
   { to: '/advisor', label: 'Asesor IA' },
-  { to: '/assessment', label: 'Mi Perfil' },
-  { to: '/dashboard', label: 'Dashboard' },
+  { to: '/dashboard', label: 'Simulador' },
 ]
 
 export default function Navbar() {
