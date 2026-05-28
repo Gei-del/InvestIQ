@@ -1,27 +1,57 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { chatWithAdvisor } from '../services/api'
 
 const INITIAL_MESSAGE = {
   role: 'assistant',
-  content: 'Hola, que gusto saludarte! Soy tu asesor financiero personal en InvestIQ. Estoy aqui para ayudarte a tomar mejores decisiones con tu dinero, ya sea que quieras empezar a invertir, entender mejor las opciones disponibles en Colombia, o simplemente resolver alguna duda. Cuentame, en que puedo ayudarte hoy?',
+  content: 'Hola! Soy tu asesor financiero personal en InvestIQ. Estoy aqui para ayudarte a tomar mejores decisiones con tu dinero. Puedo ayudarte con:\n\n- Explicarte instrumentos de inversion (CDTs, ETFs, acciones)\n- Recomendaciones segun tu perfil de riesgo\n- Calculos y proyecciones financieras\n- Estrategias de ahorro\n\nCuentame, en que puedo ayudarte hoy?',
   timestamp: new Date()
 }
 
-// Personality traits for humanized responses
-const PERSONALITY = {
-  greetings: ['Claro que si!', 'Con gusto te explico.', 'Excelente pregunta!', 'Me alegra que preguntes eso.', 'Por supuesto!'],
-  transitions: ['Ahora bien,', 'Por otro lado,', 'Ademas,', 'Algo importante es que', 'Vale la pena mencionar que'],
-  encouragements: ['Vas muy bien!', 'Es una excelente decision informarte.', 'Me parece muy inteligente que investigues antes de invertir.'],
-  closings: ['Cualquier otra duda, aqui estoy.', 'Si necesitas que profundice en algo, dimelo.', 'Estoy para ayudarte.', 'No dudes en preguntar mas.']
+// Conversation memory for context
+const ConversationMemory = {
+  topics: [],
+  userProfile: null,
+  preferences: {},
+  lastIntent: null,
+  
+  addTopic(topic) {
+    if (!this.topics.includes(topic)) {
+      this.topics.push(topic)
+    }
+  },
+  
+  setProfile(profile) {
+    this.userProfile = profile
+  },
+  
+  getContext() {
+    return {
+      topics: this.topics,
+      profile: this.userProfile,
+      preferences: this.preferences
+    }
+  },
+  
+  reset() {
+    this.topics = []
+    this.preferences = {}
+    this.lastIntent = null
+  }
 }
 
 export function useAdvisor() {
   const [messages, setMessages] = useState([INITIAL_MESSAGE])
   const [isTyping, setIsTyping] = useState(false)
+  const conversationRef = useRef(ConversationMemory)
 
-  // Load chat history from localStorage on mount
+  // Load profile and chat history
   useEffect(() => {
     try {
+      const profile = localStorage.getItem('investiq_profile')
+      if (profile) {
+        conversationRef.current.setProfile(JSON.parse(profile))
+      }
+      
       const saved = localStorage.getItem('investiq_chat_history')
       if (saved) {
         const parsed = JSON.parse(saved)
@@ -33,17 +63,17 @@ export function useAdvisor() {
         }
       }
     } catch (e) {
-      console.error('Error loading chat history:', e)
+      console.error('Error loading data:', e)
     }
   }, [])
 
-  // Save chat history to localStorage
+  // Save chat history
   useEffect(() => {
     if (messages.length > 1) {
       try {
         localStorage.setItem('investiq_chat_history', JSON.stringify(messages))
       } catch (e) {
-        console.error('Error saving chat history:', e)
+        console.error('Error saving chat:', e)
       }
     }
   }, [messages])
@@ -58,40 +88,35 @@ export function useAdvisor() {
     setMessages(prev => [...prev, userMessage])
     setIsTyping(true)
 
-    // Simulate natural typing delay (500-1500ms)
-    const typingDelay = 500 + Math.random() * 1000
+    // Typing delay (variable for natural feel)
+    const baseDelay = 600
+    const contentLength = content.length
+    const typingDelay = Math.min(baseDelay + contentLength * 10, 2000)
 
     try {
-      // Get user profile for context
-      let userProfile = null
-      try {
-        const stored = localStorage.getItem('investiq_profile')
-        userProfile = stored ? JSON.parse(stored) : null
-      } catch {
-        // Ignore
-      }
-
-      // Try to get response from backend API
+      // Try backend API first
+      const userProfile = conversationRef.current.userProfile
       const response = await chatWithAdvisor(content, userProfile)
       
       await new Promise(resolve => setTimeout(resolve, typingDelay))
       
       const assistantMessage = {
         role: 'assistant',
-        content: humanizeResponse(response.message),
+        content: response.message,
         timestamp: new Date()
       }
 
       setMessages(prev => [...prev, assistantMessage])
-    } catch (error) {
-      // Fallback to smart simulated response
+    } catch {
+      // Fallback to intelligent local response
       await new Promise(resolve => setTimeout(resolve, typingDelay))
       
-      const fallbackResponse = generateSmartResponse(content, getUserProfile())
+      const context = conversationRef.current.getContext()
+      const response = generateContextualResponse(content, context, messages)
       
       const assistantMessage = {
         role: 'assistant',
-        content: fallbackResponse,
+        content: response,
         timestamp: new Date()
       }
 
@@ -99,500 +124,708 @@ export function useAdvisor() {
     } finally {
       setIsTyping(false)
     }
-  }, [])
+  }, [messages])
 
   const clearChat = useCallback(() => {
     setMessages([INITIAL_MESSAGE])
+    conversationRef.current.reset()
     localStorage.removeItem('investiq_chat_history')
   }, [])
 
   return { messages, isTyping, sendMessage, clearChat }
 }
 
-function getUserProfile() {
-  try {
-    const stored = localStorage.getItem('investiq_profile')
-    return stored ? JSON.parse(stored) : null
-  } catch {
-    return null
+// Intent detection - CRITICAL for correct responses
+function detectIntent(question) {
+  const q = question.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  
+  // Exact intent mapping with priority
+  const intents = [
+    { pattern: /qu[eé]\s+(es|son|significa)\s+(un|los|el|la)?\s*etf/i, intent: 'explain_etf' },
+    { pattern: /etf.*internacional|internacional.*etf/i, intent: 'explain_etf_international' },
+    { pattern: /qu[eé]\s+(es|son|significa)\s+(un|los|el|la)?\s*cdt/i, intent: 'explain_cdt' },
+    { pattern: /qu[eé]\s+(es|son|significa)\s+(un|los|el|la)?\s*acci[oó]n/i, intent: 'explain_stocks' },
+    { pattern: /qu[eé]\s+(es|son|significa).*inter[eé]s\s*compuesto/i, intent: 'explain_compound' },
+    { pattern: /qu[eé]\s+(es|son|significa).*inflaci[oó]n/i, intent: 'explain_inflation' },
+    { pattern: /qu[eé]\s+(es|son|significa).*diversific/i, intent: 'explain_diversification' },
+    { pattern: /qu[eé]\s+(es|son|significa).*riesgo/i, intent: 'explain_risk' },
+    { pattern: /qu[eé]\s+(es|son|significa).*perfil/i, intent: 'explain_profile' },
+    { pattern: /qu[eé]\s+(es|son|significa).*tes|bonos?\s*tes/i, intent: 'explain_tes' },
+    { pattern: /qu[eé]\s+(es|son|significa).*fondo/i, intent: 'explain_funds' },
+    
+    { pattern: /c[oó]mo\s+(funciona|trabaja|opera)/i, intent: 'how_works' },
+    { pattern: /c[oó]mo\s+(empez|inici|comienz)/i, intent: 'how_start' },
+    { pattern: /c[oó]mo\s+(invert|ahorr)/i, intent: 'how_invest' },
+    { pattern: /c[oó]mo\s+abr(ir|o)\s*(una)?\s*cuenta/i, intent: 'how_open_account' },
+    
+    { pattern: /d[oó]nde\s+(invert|poner|meter)/i, intent: 'where_invest' },
+    { pattern: /cu[aá]l(es)?\s+(es|son).*mejor/i, intent: 'best_options' },
+    { pattern: /recomien(da|das|de)|sugie(re|res)/i, intent: 'recommendation' },
+    
+    { pattern: /cu[aá]nto\s+(dinero|plata|necesito|debo)/i, intent: 'how_much' },
+    { pattern: /cu[aá]nto\s+(gano|rend|retorno)/i, intent: 'returns' },
+    
+    { pattern: /mi\s*perfil|soy\s*(conservador|moderado|agresivo)/i, intent: 'about_profile' },
+    { pattern: /gracias|genial|excelente|perfecto/i, intent: 'thanks' },
+    { pattern: /hola|buenos?\s*(d[ií]as|tardes|noches)|hey|saludos/i, intent: 'greeting' },
+    { pattern: /adi[oó]s|hasta\s*luego|chao|bye/i, intent: 'goodbye' },
+    
+    // Topic-specific without "que es"
+    { pattern: /\betf\b/i, intent: 'about_etf' },
+    { pattern: /\bcdt\b/i, intent: 'about_cdt' },
+    { pattern: /\bacci[oó]n|\bacciones\b|\bbolsa\b/i, intent: 'about_stocks' },
+    { pattern: /\binteres\s*compuesto\b/i, intent: 'about_compound' },
+    { pattern: /\bahorro|ahorrar\b/i, intent: 'about_savings' },
+    { pattern: /\briesgo\b/i, intent: 'about_risk' },
+  ]
+  
+  for (const { pattern, intent } of intents) {
+    if (pattern.test(q)) {
+      return intent
+    }
   }
+  
+  return 'general'
 }
 
-function randomPick(arr) {
-  return arr[Math.floor(Math.random() * arr.length)]
-}
-
-function humanizeResponse(text) {
-  // Add natural language touches if response seems too formal
-  if (text && !text.includes('!') && Math.random() > 0.5) {
-    return text + '\n\n' + randomPick(PERSONALITY.closings)
-  }
-  return text
-}
-
-// Smart response generator for fallback - MORE HUMANIZED
-function generateSmartResponse(question, userProfile) {
+// Generate contextual response based on intent
+function generateContextualResponse(question, context, previousMessages) {
+  const intent = detectIntent(question)
+  const profile = context.profile?.perfil || null
   const q = question.toLowerCase()
-  const perfil = userProfile?.perfil || 'general'
   
-  // Pattern matching for common questions
-  if (q.includes('hola') || q.includes('buenos') || q.includes('buenas') || q.includes('hey')) {
-    return getGreetingResponse(perfil)
-  }
+  // Update conversation memory
+  ConversationMemory.lastIntent = intent
   
-  if (q.includes('cdt') || q.includes('certificado')) {
-    return getCDTResponse(perfil)
-  }
-  
-  if (q.includes('etf') || q.includes('fondo')) {
-    return getETFResponse(perfil)
-  }
-  
-  if (q.includes('accion') || q.includes('bolsa') || q.includes('acciones')) {
-    return getStockResponse(perfil)
-  }
-  
-  if (q.includes('interes compuesto') || q.includes('compuesto')) {
-    return getCompoundInterestResponse()
-  }
-  
-  if (q.includes('perfil') || q.includes('tipo de inversor')) {
-    return getProfileResponse(perfil)
-  }
-  
-  if (q.includes('donde invertir') || q.includes('invertir') || q.includes('inversion') || q.includes('mejor')) {
-    return getInvestmentResponse(perfil)
-  }
-  
-  if (q.includes('ahorro') || q.includes('ahorrar')) {
-    return getSavingsResponse()
-  }
-  
-  if (q.includes('riesgo')) {
-    return getRiskResponse(perfil)
-  }
-  
-  if (q.includes('inflacion') || q.includes('inflación')) {
-    return getInflationResponse()
-  }
-  
-  if (q.includes('diversif')) {
-    return getDiversificationResponse(perfil)
-  }
+  const responses = {
+    // EXPLANATIONS - Direct answers to "que es" questions
+    explain_etf: () => `Los ETFs (Exchange-Traded Funds) son fondos de inversion que se negocian en bolsa como si fueran acciones. Funcionan como una "canasta" que agrupa multiples activos.
 
-  if (q.includes('gracias') || q.includes('genial') || q.includes('excelente')) {
-    return getThanksResponse()
-  }
+**Caracteristicas principales:**
+- Se compran y venden en tiempo real durante el horario de bolsa
+- Tienen costos muy bajos (entre 0.03% y 0.5% anual)
+- Ofrecen diversificacion instantanea
+- Son transparentes - puedes ver exactamente que contienen
 
-  if (q.includes('empezar') || q.includes('principiante') || q.includes('nuevo')) {
-    return getBeginnerResponse(perfil)
-  }
+**ETFs populares para colombianos:**
+- **VOO/SPY** - Las 500 empresas mas grandes de EE.UU.
+- **VTI** - Todo el mercado estadounidense
+- **QQQ** - Las 100 mayores tecnologicas
 
-  if (q.includes('cuanto') && (q.includes('necesito') || q.includes('debo'))) {
-    return getHowMuchResponse(perfil)
-  }
-  
-  // Default response
-  return getDefaultResponse(perfil)
-}
+${profile ? `Para tu perfil ${profile}, ${profile === 'Conservador' ? 'recomiendo una exposicion moderada (10-20%) en ETFs globales como complemento a tu portafolio de renta fija.' : profile === 'Moderado' ? 'una buena combinacion seria 40-50% en ETFs diversificados como VOO o ACWI.' : 'puedes tener mayor exposicion (60-70%) incluyendo ETFs de crecimiento como QQQ.'}` : ''}
 
-function getGreetingResponse(perfil) {
-  const greeting = perfil !== 'general' 
-    ? `Hola! Que bueno verte de nuevo. Recuerdo que tienes un perfil ${perfil}, asi que ya tengo contexto para ayudarte mejor.`
-    : 'Hola! Que gusto saludarte. Estoy aqui para ayudarte con cualquier duda sobre inversiones y finanzas personales.'
-  
-  return `${greeting}
+Quieres que te explique como comprar ETFs desde Colombia?`,
 
-Cuentame, en que estas pensando? Puedo ayudarte con:
-- Recomendaciones de inversion para tu perfil
-- Explicarte como funcionan diferentes instrumentos (CDTs, ETFs, acciones)
-- Calcular proyecciones de tu dinero
-- Estrategias de ahorro
+    explain_etf_international: () => `Los ETFs internacionales son fondos que te permiten invertir en empresas de todo el mundo desde Colombia, sin necesidad de comprar acciones individuales en cada pais.
 
-Que te gustaria explorar?`
-}
+**Como funcionan:**
+Imagina que quieres invertir en Apple, Amazon, Microsoft y otras 497 empresas de Estados Unidos. En lugar de comprar cada accion (imposible!), compras UN solo ETF que las incluye todas. Es diversificacion instantanea.
 
-function getThanksResponse() {
-  return `Me alegra haberte ayudado! Para eso estoy aqui.
+**Los mas recomendados:**
+- **VOO** - Las 500 empresas mas grandes de EE.UU. (S&P 500)
+- **ACWI** - 2,900 empresas de 50 paises (mercado global)
+- **VEA** - Mercados desarrollados fuera de EE.UU.
+- **VWO** - Mercados emergentes
 
-Si mas adelante te surge otra duda o quieres que te explique algo con mas detalle, no dudes en escribirme. Recuerda que tambien puedes usar el simulador en el Dashboard para ver proyecciones concretas de tus inversiones.
+**Ventajas:**
+- Diversificacion geografica (reduces riesgo pais)
+- Acceso a empresas que no cotizan en Colombia
+- Liquidez alta - puedes vender cuando quieras
+- Costos bajos vs fondos tradicionales
 
-Mucho exito con tus decisiones financieras!`
-}
+**Como invertir desde Colombia:**
+1. Abrir cuenta en Interactive Brokers (el mas usado)
+2. Apps como Tyba o Global66 ofrecen algunos ETFs
+3. A traves de fondos colombianos que invierten en ETFs
 
-function getBeginnerResponse(perfil) {
-  return `${randomPick(PERSONALITY.greetings)} Me encanta que quieras empezar a invertir, es una de las mejores decisiones que puedes tomar.
+Te gustaria que te explique el proceso de abrir cuenta o te recomiende ETFs segun tu perfil?`,
 
-Dejame darte una guia sencilla para comenzar:
+    explain_cdt: () => `Un CDT (Certificado de Deposito a Termino) es uno de los instrumentos mas seguros para invertir en Colombia. Basicamente, le "prestas" tu dinero al banco por un tiempo fijo y a cambio te pagan intereses.
 
-**Paso 1: Construye tu base**
-Antes de invertir, asegurate de tener un fondo de emergencia (3-6 meses de gastos) en una cuenta de ahorros o CDT a corto plazo.
+**Como funciona:**
+1. Depositas una cantidad minima (desde $500,000 en la mayoria)
+2. Eliges el plazo (30, 60, 90, 180, 360 dias)
+3. El banco te paga una tasa fija durante ese tiempo
+4. Al vencer, recibes tu capital + intereses
 
-**Paso 2: Conoce tu perfil**
-Te recomiendo hacer el test de perfil en "Mi Perfil" para saber que tipo de inversiones van mejor contigo. ${perfil !== 'general' ? `Tu ya lo hiciste y eres ${perfil}, lo cual me ayuda a darte mejores recomendaciones.` : ''}
+**Tasas actuales en Colombia (2024):**
+- Bancolombia: 11-12% EA
+- Davivienda: 11.5% EA
+- Pibank/Lulo Bank: hasta 13% EA
+- Nu Bank: hasta 13% EA
+
+**Ventajas:**
+- Garantia Fogafin hasta $50 millones
+- Rendimiento conocido desde el inicio
+- Cero riesgo de perder el capital
+- Ideal para metas de corto/mediano plazo
+
+**Consideraciones:**
+- Tu dinero queda "bloqueado" durante el plazo
+- Si retiras antes, pierdes parte de los intereses
+- La inflacion puede reducir tu ganancia real
+
+${profile === 'Conservador' ? 'Para tu perfil Conservador, los CDTs son perfectos como base de tu portafolio (50-70%).' : ''}
+
+Quieres que te ayude a calcular cuanto ganarias con un CDT especifico?`,
+
+    explain_compound: () => `El interes compuesto es cuando tus ganancias generan mas ganancias. Es el concepto mas poderoso en finanzas personales.
+
+**La diferencia con interes simple:**
+- **Simple:** Ganas intereses solo sobre tu capital inicial
+- **Compuesto:** Ganas intereses sobre el capital + los intereses anteriores
+
+**Ejemplo practico con $10 millones al 12% anual:**
+
+| Ano | Interes Simple | Interes Compuesto |
+|-----|----------------|-------------------|
+| 1   | $11.2M         | $11.2M            |
+| 5   | $16M           | $17.6M            |
+| 10  | $22M           | $31M              |
+| 20  | $34M           | $96.5M            |
+
+En 20 anos, la diferencia es de $62.5 millones!
+
+**Las 3 claves del interes compuesto:**
+1. **Tiempo** - Entre mas temprano empieces, mejor
+2. **Consistencia** - Aportar regularmente multiplica el efecto
+3. **Reinversion** - No retirar las ganancias
+
+Puedes usar el Simulador en el Dashboard para ver proyecciones exactas con tus numeros. Quieres que te explique alguna estrategia especifica?`,
+
+    explain_stocks: () => `Las acciones representan una pequena parte de la propiedad de una empresa. Cuando compras una accion, te conviertes en "dueno" de una fraccion de esa compania.
+
+**Como funcionan:**
+- El precio sube/baja segun oferta, demanda y resultados de la empresa
+- Algunas pagan dividendos (parte de las ganancias)
+- Puedes ganar por apreciacion (vender mas caro) o dividendos
+
+**Opciones desde Colombia:**
+
+**Acciones Colombianas (BVC):**
+- Ecopetrol, Bancolombia, ISA, Grupo Sura, Nutresa
+- Ventaja: Sin riesgo cambiario, facil acceso
+- Desventaja: Mercado pequeno y menos liquido
+
+**Acciones Internacionales:**
+- Apple, Amazon, Tesla, Google, Microsoft
+- Acceso via brokers como Interactive Brokers
+- Mayor liquidez y opciones
+
+**Mi recomendacion honesta:**
+Para la mayoria de personas, es mejor invertir en ETFs que en acciones individuales porque:
+- Menor riesgo (estas diversificado)
+- Menos tiempo investigando
+- Historicamente, pocos le ganan al mercado
+
+${profile === 'Agresivo' ? 'Con tu perfil Agresivo, puedes destinar hasta 30% a acciones individuales, pero diversifica en al menos 10-15 empresas diferentes.' : 'Te sugiero que las acciones individuales sean maximo 10-20% de tu portafolio.'}
+
+Te interesa que profundice en alguna opcion?`,
+
+    explain_inflation: () => `La inflacion es el aumento generalizado de precios en la economia. En terminos simples: tu dinero compra menos cosas con el tiempo.
+
+**Impacto real:**
+Si la inflacion es del 6% anual, $1 millon hoy equivale a $940,000 en poder de compra el proximo ano.
+
+**Inflacion en Colombia:**
+- 2022: 13.12% (muy alta)
+- 2023: 9.28%
+- 2024: ~6-7% (bajando)
+- Meta del Banco de la Republica: 3%
+
+**Por que importa para tus inversiones:**
+Tu rendimiento REAL = Rendimiento nominal - Inflacion
+
+Ejemplo:
+- CDT al 12% con inflacion del 6% = 6% de ganancia real
+- Cuenta de ahorros al 1% con inflacion del 6% = -5% real (pierdes!)
+
+**Como protegerte:**
+1. Invertir en activos que superen la inflacion
+2. Considerar TES indexados a inflacion (UVR)
+3. Diversificar en dolares (ETFs internacionales)
+4. Invertir en activos reales (inmuebles, acciones)
+
+Quieres que te ayude a calcular el impacto de la inflacion en tus inversiones?`,
+
+    explain_risk: () => `El riesgo en inversiones es la posibilidad de que no obtengas el rendimiento esperado, o incluso que pierdas parte de tu dinero.
+
+**Tipos de riesgo:**
+
+- **Riesgo de mercado:** Todo el mercado baja (crisis, recesiones)
+- **Riesgo especifico:** Una empresa o sector tiene problemas
+- **Riesgo de liquidez:** No poder vender cuando necesitas
+- **Riesgo cambiario:** Variaciones del dolar vs peso
+- **Riesgo de inflacion:** Tus ganancias no superan la inflacion
+
+**La relacion riesgo-retorno:**
+Mayor riesgo = Mayor potencial de ganancia (y de perdida)
+
+| Instrumento | Riesgo | Retorno esperado |
+|-------------|--------|------------------|
+| CDT         | Muy bajo | 10-13% |
+| Bonos TES   | Bajo   | 11-14% |
+| ETF Global  | Medio  | 8-12% |
+| Acciones    | Alto   | 10-20%+ |
+
+**Como manejar el riesgo:**
+1. Diversifica - No pongas todo en una sola opcion
+2. Invierte a largo plazo - El tiempo suaviza la volatilidad
+3. Ten fondo de emergencia - Para no vender en mal momento
+4. Conoce tu tolerancia - Invierte segun tu perfil
+
+${profile ? `Tu perfil ${profile} indica una tolerancia al riesgo ${profile === 'Conservador' ? 'baja, lo cual esta bien - la tranquilidad tiene valor' : profile === 'Agresivo' ? 'alta, lo que te permite aprovechar oportunidades' : 'moderada, buscando balance entre seguridad y crecimiento'}.` : ''}
+
+Hay algo especifico sobre riesgo que te preocupe?`,
+
+    explain_tes: () => `Los TES (Titulos de Tesoreria) son bonos emitidos por el Gobierno de Colombia. Son considerados la inversion mas segura del pais porque el Estado respalda el pago.
+
+**Como funcionan:**
+- El gobierno necesita dinero, tu se lo prestas
+- A cambio, te paga intereses periodicos
+- Al vencer, recuperas tu capital completo
+
+**Tipos de TES:**
+- **Tasa fija:** Sabes exactamente cuanto recibiras
+- **TES UVR:** Indexados a inflacion, protegen tu poder adquisitivo
+- **TES corto plazo:** Menor riesgo de tasa de interes
+
+**Rendimientos actuales:** 11-14% EA dependiendo del plazo
+
+**Ventajas:**
+- Maxima seguridad (respaldo del Estado)
+- Liquidez - Puedes venderlos antes del vencimiento
+- Exentos de algunos impuestos
+
+**Como invertir:**
+1. Directamente en subastas del Banco de la Republica (montos altos)
+2. A traves de fondos de inversion de renta fija
+3. Algunos bancos ofrecen acceso a TES
+
+${profile === 'Conservador' ? 'Para tu perfil Conservador, los TES son excelentes para diversificar junto con CDTs.' : ''}
+
+Te gustaria saber mas sobre como acceder a TES?`,
+
+    explain_funds: () => `Los fondos de inversion son vehiculos que reunen el dinero de muchos inversionistas para invertirlo de forma diversificada, administrado por profesionales.
+
+**Tipos principales en Colombia:**
+
+**Fondos de Renta Fija:**
+- Invierten en CDTs, bonos, TES
+- Bajo riesgo, rendimientos estables
+- Ideal para perfiles conservadores
+
+**Fondos Mixtos/Balanceados:**
+- Combinan renta fija + variable
+- Riesgo moderado
+- Para perfiles moderados
+
+**Fondos de Renta Variable:**
+- Invierten en acciones
+- Mayor riesgo y potencial de retorno
+- Para perfiles agresivos
+
+**Fondos Internacionales:**
+- Acceso a mercados globales
+- Diversificacion geografica
+
+**Donde encontrarlos:**
+- Apps: Tyba, Mesfix, Tribeca
+- Bancos: Bancolombia, Davivienda
+- Comisionistas: Skandia, Old Mutual
+
+**Ventajas:**
+- Diversificacion con poco capital
+- Administracion profesional
+- Facil acceso
+
+**Consideraciones:**
+- Cobran comision de administracion (0.5-2% anual)
+- No todos rinden igual - investiga el historico
+
+${profile ? `Para tu perfil ${profile}, te recomendaria fondos ${profile === 'Conservador' ? 'de renta fija con bajo costo' : profile === 'Moderado' ? 'mixtos o balanceados' : 'de renta variable o con exposicion internacional'}.` : ''}
+
+Quieres que te recomiende fondos especificos?`,
+
+    // HOW TO questions
+    how_start: () => `Excelente decision querer empezar a invertir! Te doy una guia paso a paso:
+
+**Paso 1: Construye tu base financiera**
+Antes de invertir, asegurate de:
+- Tener un fondo de emergencia (3-6 meses de gastos)
+- No tener deudas de alto interes (tarjetas de credito)
+- Conocer tus ingresos y gastos mensuales
+
+**Paso 2: Define tu perfil de riesgo**
+Haz el test en "Mi Perfil" para saber que tipo de inversiones van contigo. ${profile ? `Ya lo hiciste y eres ${profile}!` : 'Solo toma 2 minutos.'}
 
 **Paso 3: Empieza simple**
-Para principiantes en Colombia, recomiendo:
-1. **CDTs** - Empezar a entender como funciona invertir, sin riesgo
-2. **Fondos de inversion** - A traves de apps como Tyba o tu banco
-3. **ETFs** - Una vez te sientas comodo, para mayor crecimiento
+Para principiantes recomiendo:
+1. **CDT** - Para entender como funciona invertir, sin riesgo
+2. **Fondo de inversion** - En apps como Tyba (desde $100,000)
+3. **Luego ETFs** - Para mayor crecimiento a largo plazo
 
-**Lo mas importante:** No necesitas mucho dinero para empezar. Con $500,000 COP ya puedes abrir un CDT o empezar en algunos fondos.
+**Paso 4: Se constante**
+Lo mas importante no es el monto, sino la constancia. Invierte un porcentaje fijo cada mes.
 
-Que te parece? Quieres que profundicemos en alguno de estos pasos?`
-}
+**Montos minimos:**
+- CDT: Desde $500,000
+- Fondos: Desde $100,000 en algunas apps
+- ETFs: Desde $50 USD aprox.
 
-function getHowMuchResponse(perfil) {
-  return `Excelente pregunta! La cantidad para invertir depende de tu situacion personal, pero te doy algunas guias practicas:
+Con cual paso te gustaria empezar?`,
+
+    how_invest: () => `Hay varias formas de invertir tu dinero en Colombia. Te explico las principales opciones:
+
+**Opciones de bajo riesgo:**
+- CDTs en bancos tradicionales o digitales
+- Fondos de renta fija
+- Bonos TES
+
+**Opciones de riesgo moderado:**
+- ETFs globales (via brokers internacionales)
+- Fondos mixtos/balanceados
+- FICs inmobiliarios
+
+**Opciones de mayor riesgo:**
+- Acciones colombianas (BVC)
+- Acciones internacionales
+- Criptomonedas (muy volatil)
+
+${profile ? `\n**Recomendacion para tu perfil ${profile}:**\n${
+  profile === 'Conservador' ? '- 60-70% CDTs y bonos\n- 20-30% Fondos renta fija\n- 10% ETFs globales conservadores' :
+  profile === 'Moderado' ? '- 40% CDTs y bonos\n- 35% ETFs globales (VOO, ACWI)\n- 25% Fondos mixtos' :
+  '- 20% CDTs (liquidez)\n- 50% ETFs de crecimiento\n- 30% Acciones diversificadas'
+}` : 'Te recomiendo hacer el test de perfil para darte una recomendacion personalizada.'}
+
+Quieres que profundice en alguna de estas opciones?`,
+
+    how_open_account: () => `Te explico como abrir cuentas para invertir:
+
+**Para CDTs y Fondos Locales:**
+1. Si ya tienes cuenta bancaria, puedes abrir CDTs desde la app del banco
+2. Apps fintech: Tyba, Nu, Lulo Bank (proceso 100% digital)
+
+**Para ETFs Internacionales (Interactive Brokers):**
+1. Ve a interactivebrokers.com
+2. Crea cuenta (necesitas pasaporte o cedula)
+3. Verifica identidad (foto de documento)
+4. Deposita fondos via transferencia internacional
+5. Proceso toma 3-5 dias habiles
+
+**Para Acciones Colombianas (BVC):**
+1. Abre cuenta en una comisionista (Skandia, Acciones y Valores, etc.)
+2. O usa apps como Trii
+
+**Documentos que necesitas:**
+- Cedula o pasaporte
+- Extracto bancario
+- Declaracion de renta (para montos grandes)
+
+**Costos aproximados:**
+- CDTs/Fondos locales: Gratis
+- Interactive Brokers: Sin costo de apertura
+- Comisionistas BVC: Varia segun la firma
+
+Por cual opcion te gustaria empezar?`,
+
+    // RECOMMENDATIONS
+    recommendation: () => {
+      if (profile === 'Conservador') {
+        return `Para tu perfil Conservador, mi recomendacion es:
+
+**Portafolio sugerido:**
+- **CDTs (50-60%)** - Bancolombia, Davivienda, o digitales como Pibank
+- **Bonos TES (20-25%)** - A traves de fondos de renta fija
+- **Fondo conservador (15-20%)** - Como reserva liquida
+- **ETF global (5-10%)** - Una pequena exposicion para largo plazo
+
+**Rendimiento esperado:** 10-12% anual
+**Riesgo:** Muy bajo
+
+**Pasos concretos:**
+1. Abre un CDT a 6 meses con el 50% de tu capital
+2. Invierte 30% en un fondo de renta fija (Tyba tiene buenos)
+3. El resto dejalo liquido mientras investigas ETFs
+
+Esta estrategia te dara tranquilidad y rendimientos por encima de la inflacion. Quieres que profundice en alguna parte?`
+      } else if (profile === 'Moderado') {
+        return `Para tu perfil Moderado, mi recomendacion es:
+
+**Portafolio sugerido:**
+- **CDTs/Bonos (35-40%)** - Tu base segura
+- **ETF global VOO o ACWI (30-35%)** - Crecimiento internacional
+- **Fondo mixto (20-25%)** - Balance administrado
+- **Reserva liquida (5-10%)** - Para oportunidades
+
+**Rendimiento esperado:** 12-14% anual
+**Riesgo:** Moderado (pueden haber fluctuaciones temporales)
+
+**Pasos concretos:**
+1. Abre cuenta en Interactive Brokers para ETFs
+2. Pon 40% en CDTs mientras aprendes
+3. Invierte mensualmente en VOO o VTI
+4. Complementa con un fondo mixto local
+
+El balance es clave - tendras crecimiento sin volatilidad extrema. Quieres que te ayude con algo especifico?`
+      } else if (profile === 'Agresivo') {
+        return `Para tu perfil Agresivo, mi recomendacion es:
+
+**Portafolio sugerido:**
+- **ETF tecnologico QQQ (35-40%)** - Alto crecimiento
+- **ETF global VOO/VTI (25-30%)** - Diversificacion base
+- **CDT como reserva (15%)** - Liquidez para oportunidades
+- **Acciones individuales (15-20%)** - Si quieres investigar empresas
+
+**Rendimiento esperado:** 14-18%+ anual
+**Riesgo:** Alto (prepara para volatilidad del 20-30%)
+
+**Pasos concretos:**
+1. Abre Interactive Brokers si no lo tienes
+2. Empieza con 60% en QQQ + VOO
+3. Manten 15% en CDT local para emergencias
+4. Acciones solo de empresas que entiendas bien
+
+Importante: Este portafolio puede bajar 20-30% en un mal ano. Si eso te quitaria el sueno, considera ajustar. Quieres discutir alguna parte?`
+      }
+      
+      return `Para darte una recomendacion personalizada, necesito conocer tu perfil de riesgo.
+
+**Puedes:**
+1. Hacer el test en "Mi Perfil" (2 minutos)
+2. Decirme si te consideras conservador, moderado o agresivo
+
+En general, una buena estrategia para empezar es:
+- 50% en instrumentos seguros (CDTs, bonos)
+- 30% en ETFs globales diversificados
+- 20% liquido mientras aprendes
+
+Cual opcion prefieres?`
+    },
+
+    where_invest: () => {
+      const rec = responses.recommendation()
+      return rec
+    },
+
+    best_options: () => {
+      const rec = responses.recommendation()
+      return rec
+    },
+
+    // AMOUNTS
+    how_much: () => `La cantidad ideal para invertir depende de tu situacion, pero te doy guias practicas:
+
+**Regla del 20%**
+Idealmente, ahorra e invierte el 20% de tus ingresos. Pero si estas empezando, incluso el 5-10% hace diferencia.
 
 **Montos minimos en Colombia:**
-- **CDTs:** Desde $500,000 en la mayoria de bancos
-- **Fondos de inversion:** Desde $100,000 en apps como Tyba
-- **ETFs internacionales:** Desde $50 USD aprox. en brokers
+- CDTs: Desde $500,000
+- Fondos (Tyba): Desde $100,000
+- ETFs internacionales: Desde $50 USD
+- Acciones BVC: Depende del precio
 
-**La regla del 20%**
-Idealmente, destina el 20% de tus ingresos al ahorro e inversion. Pero si estas empezando, incluso el 5-10% hace diferencia con el tiempo.
+**La constancia importa mas que el monto:**
+$500,000/mes durante 10 anos al 12% = $115+ millones
+$200,000/mes durante 20 anos al 12% = $200+ millones
 
 **Mi recomendacion:**
 1. Primero, ten 3-6 meses de gastos en emergencias
-2. Luego, invierte lo que puedas de forma CONSTANTE cada mes
-3. Aumenta gradualmente conforme mejoren tus ingresos
+2. Luego, invierte lo que puedas de forma CONSTANTE
+3. Aumenta gradualmente con tus ingresos
 
-El monto exacto importa menos que la constancia. $500,000 mensuales durante 10 anos al 12% se convierten en mas de $115 millones!
+Puedes usar el Simulador para calcular proyecciones con tus numeros exactos. Cuanto podrias invertir mensualmente?`,
 
-Quieres que te ayude a calcular una proyeccion especifica? Puedes usar el simulador en el Dashboard o decirme tus numeros aqui.`
-}
+    returns: () => `Los rendimientos varian segun el instrumento y el riesgo:
 
-function getCDTResponse(perfil) {
-  return `${randomPick(PERSONALITY.greetings)} Los CDT son una de mis recomendaciones favoritas para empezar a invertir en Colombia, especialmente si buscas seguridad.
+**Rendimientos tipicos en Colombia:**
 
-**Que es un CDT?**
-Es como un "prestamo" que tu le haces al banco. A cambio, te pagan intereses. Tu dinero esta protegido por Fogafin hasta $50 millones.
+| Instrumento | Rendimiento anual | Riesgo |
+|-------------|-------------------|--------|
+| Cuenta ahorros | 0-1% | Nulo |
+| CDT | 10-13% | Muy bajo |
+| Bonos TES | 11-14% | Bajo |
+| Fondos renta fija | 9-12% | Bajo |
+| ETF global (historico) | 8-12% | Medio |
+| Acciones (historico) | 10-20%+ | Alto |
 
-**Las tasas actuales estan muy atractivas:**
-- Bancolombia: ~11-12% EA
-- Davivienda: ~11.5% EA
-- Pibank/Lulo Bank: hasta 13% EA (bancos digitales)
-- Banco de Bogota: ~11% EA
+**Importante:**
+- Rendimientos pasados NO garantizan rendimientos futuros
+- La inflacion reduce tu ganancia real
+- Mayor riesgo = Mayor potencial pero NO garantizado
 
-**Un tip importante:**
-Considera la estrategia de "escalonamiento": divide tu dinero en CDTs con diferentes plazos (3, 6, 9, 12 meses). Asi tendras liquidez periodica y buenas tasas.
+**Calculo real:**
+Si inviertes $10M al 12% con inflacion del 6%:
+- Ganancia nominal: 12% = $1.2M
+- Ganancia real: 6% = $600K en poder de compra
 
-${perfil === 'Conservador' ? 'Para tu perfil Conservador, los CDTs son perfectos. Te dan tranquilidad y rendimientos por encima de la inflacion.' : 
-  perfil === 'Moderado' ? 'Con tu perfil Moderado, te sugiero que los CDTs sean parte de tu portafolio (40-50%), combinados con otras inversiones de mayor crecimiento.' :
-  perfil === 'Agresivo' ? 'Aunque tu perfil es Agresivo, tener un 15-20% en CDTs como reserva de liquidez es inteligente.' : ''}
+Quieres que te ayude a calcular una proyeccion especifica?`,
 
-Te gustaria que te explique como funcionan otras opciones o que profundice en los CDTs?`
-}
+    // PROFILE
+    about_profile: () => {
+      if (profile) {
+        return `Tu perfil actual es **${profile}**. Esto significa que:
 
-function getETFResponse(perfil) {
-  return `${randomPick(PERSONALITY.greetings)} Los ETFs son una de las formas mas inteligentes de invertir, especialmente para acceder a mercados internacionales desde Colombia.
+${profile === 'Conservador' ? `**Caracteristicas:**
+- Priorizas la seguridad sobre el crecimiento
+- Prefieres dormir tranquilo sabiendo que tu dinero esta seguro
+- No te gusta ver tu portafolio en rojo
 
-**Que son los ETFs?**
-Imagina que quieres invertir en las 500 empresas mas grandes de Estados Unidos. En lugar de comprar acciones de cada una (imposible!), compras UN ETF que las incluye todas. Es diversificacion instantanea.
+**Instrumentos ideales:**
+- CDTs (50-60%)
+- Bonos TES (20-30%)
+- Fondos de renta fija (15-20%)
 
-**Los ETFs que mas recomiendo:**
+**Rendimiento esperado:** 10-12% anual con muy bajo riesgo` :
+profile === 'Moderado' ? `**Caracteristicas:**
+- Buscas balance entre seguridad y crecimiento
+- Aceptas algunas fluctuaciones por mejores rendimientos
+- Tienes horizonte de mediano-largo plazo
 
-Para empezar (bajo costo, alta diversificacion):
-- **VOO o SPY** - Las 500 empresas mas grandes de EE.UU.
-- **VTI** - TODO el mercado estadounidense (4,000+ empresas)
-- **ACWI** - Mercado global (incluye emergentes)
+**Instrumentos ideales:**
+- CDTs y bonos (40%)
+- ETFs globales (35%)
+- Fondos mixtos (25%)
 
-Si quieres mas crecimiento:
-- **QQQ** - Las 100 mayores tecnologicas
-- **VGT** - Sector tecnologia
+**Rendimiento esperado:** 12-14% anual` :
+`**Caracteristicas:**
+- Buscas maximizar ganancias a largo plazo
+- Toleras ver tu portafolio bajar temporalmente
+- Tienes horizonte de largo plazo (5+ anos)
 
-**Como invertir desde Colombia:**
-1. Abrir cuenta en Interactive Brokers (el mas popular)
-2. Apps locales como Tyba ofrecen algunos ETFs
-3. Fondos colombianos que invierten en ETFs internacionales
+**Instrumentos ideales:**
+- ETFs de crecimiento (45%)
+- ETFs globales (30%)
+- Acciones diversificadas (25%)
 
-${perfil === 'Moderado' ? 'Para tu perfil Moderado, una combinacion de VOO (40%) con renta fija local (60%) seria ideal.' :
-  perfil === 'Agresivo' ? 'Con tu perfil Agresivo, puedes tener mas exposicion a ETFs de crecimiento como QQQ, pero siempre diversificando.' :
-  perfil === 'Conservador' ? 'Aunque eres Conservador, un pequeño porcentaje (10-20%) en ETFs globales puede mejorar tu rendimiento a largo plazo.' : ''}
+**Rendimiento esperado:** 14-18%+ anual con volatilidad`}
 
-Quieres que te explique como abrir una cuenta o profundizar en alguno de estos ETFs?`
-}
+Quieres que te de recomendaciones mas especificas?`
+      }
+      
+      return `Aun no conozco tu perfil de riesgo. Te invito a hacer el test en "Mi Perfil" para poder darte recomendaciones personalizadas.
 
-function getStockResponse(perfil) {
-  return `${randomPick(PERSONALITY.greetings)} Invertir en acciones es emocionante, pero hay que hacerlo con estrategia. Te cuento las opciones desde Colombia:
+Los tres perfiles principales son:
 
-**Acciones Colombianas (BVC)**
-Puedes invertir en empresas como Ecopetrol, Bancolombia, ISA, Grupo Sura. La ventaja es que no hay riesgo cambiario y las comisiones son bajas.
+**Conservador:** Prioriza seguridad, rendimiento 10-12%
+**Moderado:** Balance seguridad/crecimiento, rendimiento 12-14%
+**Agresivo:** Maximiza crecimiento, rendimiento 14-18%+
 
-Sin embargo, siendo honesto: el mercado colombiano es pequeno y menos liquido que el internacional.
+El test solo toma 2 minutos y me ayuda a asesorarte mejor. Quieres que te explique mas sobre algun perfil?`
+    },
 
-**Acciones Internacionales**
-La mejor forma es a traves de un broker internacional como Interactive Brokers. Asi puedes comprar Apple, Amazon, Tesla, o cualquier empresa que te interese.
+    // GREETINGS & SOCIAL
+    greeting: () => {
+      const hour = new Date().getHours()
+      const saludo = hour < 12 ? 'Buenos dias' : hour < 18 ? 'Buenas tardes' : 'Buenas noches'
+      
+      return `${saludo}! ${profile ? `Que bueno verte de nuevo. Recuerdo que tienes un perfil ${profile}.` : 'Que gusto saludarte.'}
 
-**Mi recomendacion honesta:**
-Para la mayoria de personas, es mejor invertir en ETFs que en acciones individuales. Por que?
-- Menor riesgo (estas diversificado)
-- Menos tiempo de investigacion
-- Historicamente, pocos inversionistas logran ganarle al mercado
+Soy tu asesor financiero en InvestIQ. Puedo ayudarte con:
+- Explicarte instrumentos de inversion
+- Recomendaciones personalizadas
+- Calculos y proyecciones
+- Resolver dudas sobre finanzas
 
-${perfil === 'Agresivo' ? 'Tu perfil Agresivo te permite tener mas acciones individuales, pero te sugiero que sea maximo el 30% de tu portafolio, y el resto en ETFs diversificados.' :
-  'Te sugiero que si quieres acciones, sea una parte pequena de tu portafolio (10-20%), y el resto en opciones mas diversificadas.'}
+En que te puedo ayudar hoy?`
+    },
 
-Te interesa que te explique como abrir una cuenta de broker o prefieres explorar otras opciones primero?`
-}
+    thanks: () => `Me alegra haberte ayudado! Recuerda que estoy aqui para cualquier duda adicional.
 
-function getCompoundInterestResponse() {
-  return `Ah, el interes compuesto! Einstein supuestamente lo llamo "la octava maravilla del mundo". Dejame explicartelo de forma simple:
+Algunas cosas que podrias hacer ahora:
+- Usar el Simulador para ver proyecciones con tus numeros
+- Hacer el test de perfil si aun no lo has hecho
+- Preguntarme sobre algun instrumento especifico
 
-**La magia del interes compuesto**
-Es cuando tus intereses generan mas intereses. Es como una bola de nieve que crece sola.
+Mucho exito con tus inversiones!`,
 
-**Ejemplo practico:**
-Inviertes $10 millones al 12% anual:
+    goodbye: () => `Hasta luego! Fue un gusto ayudarte. Cuando tengas mas preguntas sobre inversiones, aqui estare.
 
-| Ano | Valor | Ganancia del ano |
-|-----|-------|------------------|
-| 0   | $10M  | - |
-| 1   | $11.2M | $1.2M |
-| 5   | $17.6M | $2.1M |
-| 10  | $31M | $3.4M |
-| 20  | $96.5M | $10.3M |
+Tip final: La constancia es mas importante que el monto. Empieza con lo que puedas y se consistente.
 
-Fijate como en el ano 1 ganas $1.2M, pero en el ano 20 ganas $10.3M solo ese ano! Eso es el poder del tiempo.
+Exitos!`,
 
-**Las 3 claves:**
-1. **Empezar temprano** - Cada ano cuenta muchisimo
-2. **Ser constante** - Aportar regularmente multiplica el efecto
-3. **No retirar** - Dejar que los intereses se acumulen
+    // TOPIC DISCUSSIONS (when user mentions topic without asking "que es")
+    about_etf: () => responses.explain_etf(),
+    about_cdt: () => responses.explain_cdt(),
+    about_stocks: () => responses.explain_stocks(),
+    about_compound: () => responses.explain_compound(),
+    about_savings: () => `El ahorro es el primer paso hacia la independencia financiera.
 
-Puedes usar el simulador en el Dashboard para ver proyecciones exactas con tus numeros. Quieres que te ayude a calcular algo especifico?`
-}
-
-function getProfileResponse(perfil) {
-  const current = perfil !== 'general' ? `Segun tu evaluacion, eres un inversionista **${perfil}**. ` : ''
-  
-  return `${current}Dejame explicarte los tres perfiles principales:
-
-**Conservador**
-- Prioriza no perder dinero sobre ganar mas
-- Prefiere dormir tranquilo sabiendo que su dinero esta seguro
-- Ideal: CDTs, bonos TES, fondos de renta fija
-- Rendimiento tipico: 10-12% anual
-
-**Moderado**
-- Busca balance entre seguridad y crecimiento
-- Acepta algunas fluctuaciones por mejores rendimientos
-- Ideal: Mix de renta fija (60%) + ETFs/fondos (40%)
-- Rendimiento tipico: 12-15% anual
-
-**Agresivo**
-- Busca maximizar ganancias a largo plazo
-- Tolera ver su portafolio bajar temporalmente
-- Ideal: ETFs de crecimiento, acciones diversificadas
-- Rendimiento tipico: 14-18%+ anual
-
-${perfil !== 'general' ? `Como eres ${perfil}, te recomiendo enfocarte en las opciones de ese perfil, pero siempre puedes ajustar segun cambien tus circunstancias.` : 'Te invito a hacer el test en "Mi Perfil" para conocer el tuyo. Solo toma 2 minutos y me ayuda a darte mejores consejos!'}
-
-Quieres que te de recomendaciones especificas para algun perfil?`
-}
-
-function getInvestmentResponse(perfil) {
-  let recomendacion = ''
-  
-  if (perfil === 'Conservador') {
-    recomendacion = `**Para tu perfil Conservador, te sugiero:**
-
-1. **CDTs (50-60%)** - En Bancolombia, Davivienda o bancos digitales
-2. **Bonos TES (20-30%)** - Deuda del gobierno, muy segura
-3. **Fondo de renta fija (10-20%)** - Para algo de diversificacion
-
-Esta combinacion te daria ~11-12% anual con muy bajo riesgo.`
-  } else if (perfil === 'Moderado') {
-    recomendacion = `**Para tu perfil Moderado, te sugiero:**
-
-1. **CDTs y bonos (40%)** - Tu base segura
-2. **ETF global como ACWI o VOO (35%)** - Crecimiento internacional
-3. **Fondo mixto local (25%)** - Balance administrado
-
-Esta combinacion te daria ~12-14% anual con riesgo controlado.`
-  } else if (perfil === 'Agresivo') {
-    recomendacion = `**Para tu perfil Agresivo, te sugiero:**
-
-1. **ETFs de crecimiento QQQ/VGT (45%)** - Mayor potencial
-2. **ETF global VOO/VTI (30%)** - Diversificacion base
-3. **CDT como reserva (15%)** - Liquidez para oportunidades
-4. **Acciones individuales (10%)** - Si quieres investigar empresas
-
-Esta combinacion te daria ~14-18% anual con volatilidad.`
-  } else {
-    recomendacion = `**Opciones populares en Colombia:**
-
-- **CDTs** - Lo mas seguro, ~11-13% anual
-- **Fondos de inversion** - Administrados por expertos
-- **ETFs internacionales** - Acceso a mercados globales
-- **Acciones BVC** - Empresas colombianas
-
-Te recomiendo hacer el test de perfil primero para darte consejos mas personalizados. Esta en la seccion "Mi Perfil".`
-  }
-
-  return `${randomPick(PERSONALITY.greetings)} Que bueno que quieras invertir tu dinero de forma inteligente.
-
-${recomendacion}
-
-**Pasos concretos para empezar:**
-1. Define cuanto puedes invertir mensualmente
-2. Abre las cuentas necesarias (banco, broker si aplica)
-3. Empieza con un monto pequeno para aprender
-4. Se constante, eso es lo mas importante
-
-Quieres que te explique alguna de estas opciones en detalle?`
-}
-
-function getSavingsResponse() {
-  return `${randomPick(PERSONALITY.greetings)} El ahorro es el primer paso, y me alegra que estes pensando en ello.
-
-**La regla 50/30/20 funciona muy bien:**
-- 50% Necesidades (arriendo, servicios, comida, transporte)
-- 30% Gustos (entretenimiento, restaurantes, compras)
+**Estrategia 50/30/20:**
+- 50% Necesidades (arriendo, servicios, comida)
+- 30% Gustos (entretenimiento, salidas)
 - 20% Ahorro e inversion
 
-**Tips que realmente funcionan:**
+**Tips practicos:**
+1. **Automatiza** - Transfiere a ahorro el dia de pago
+2. **Fondo de emergencia primero** - 3-6 meses de gastos
+3. **Regla de 24 horas** - Espera antes de compras grandes
+4. **Aumenta con cada aumento** - Si te suben el sueldo, sube tu ahorro
 
-1. **Automatiza desde el dia de pago**
-Configura una transferencia automatica. Si no lo ves, no lo gastas.
+**Donde guardar:**
+- Emergencias: Cuenta de facil acceso
+- Corto plazo: CDT a 90 dias
+- Largo plazo: Inversiones segun tu perfil
 
-2. **Fondo de emergencia primero**
-Antes de invertir, ten 3-6 meses de gastos guardados. Esto te da tranquilidad y evita que vendas inversiones en mal momento.
+Cuanto logras ahorrar actualmente? Quizas pueda ayudarte a optimizar.`,
 
-3. **El metodo de los 24 horas**
-Antes de una compra grande, espera 24 horas. Muchas veces el impulso pasa.
+    about_risk: () => responses.explain_risk(),
 
-4. **Sube tu ahorro con cada aumento de sueldo**
-Si te suben el sueldo, aumenta tu porcentaje de ahorro antes de acostumbrarte al dinero extra.
+    // DEFAULT - General financial assistance
+    general: () => {
+      // Check if question contains any financial keywords
+      const q = question.toLowerCase()
+      
+      if (q.includes('etf') || q.includes('fondo')) {
+        return responses.about_etf()
+      }
+      if (q.includes('cdt') || q.includes('certificado')) {
+        return responses.about_cdt()
+      }
+      if (q.includes('accion') || q.includes('bolsa')) {
+        return responses.about_stocks()
+      }
+      
+      return `Entiendo tu pregunta. Dejame ayudarte con informacion relevante.
 
-**Donde poner tus ahorros:**
-- Emergencias: Cuenta de ahorros de facil acceso
-- Corto plazo (< 1 ano): CDT a 90 dias
-- Mediano/largo plazo: Inversiones segun tu perfil
+Como tu asesor financiero, puedo orientarte sobre:
+- **Instrumentos de inversion:** CDTs, ETFs, acciones, fondos, bonos
+- **Estrategias:** Segun tu perfil de riesgo y objetivos
+- **Calculos:** Proyecciones, interes compuesto, metas financieras
+- **Conceptos:** Riesgo, diversificacion, inflacion
 
-Cuanto estas logrando ahorrar actualmente? Quizas pueda ayudarte a optimizar.`
-}
+${profile ? `Teniendo en cuenta que tu perfil es ${profile}, puedo darte recomendaciones personalizadas.` : 'Te sugiero hacer el test de perfil para recomendaciones mas personalizadas.'}
 
-function getRiskResponse(perfil) {
-  return `El riesgo es algo que todos debemos entender antes de invertir. Dejame explicartelo de forma clara:
+Podrias reformular tu pregunta o decirme especificamente que tema te interesa?`
+    },
 
-**Que es el riesgo en inversiones?**
-Es la posibilidad de que tu inversion baje de valor o no rinda lo esperado. Pero ojo: NO invertir tambien es un riesgo (la inflacion se come tu dinero).
+    // Handle "how works" intent by looking at context
+    how_works: () => {
+      const q = question.toLowerCase()
+      if (q.includes('etf')) return responses.explain_etf()
+      if (q.includes('cdt')) return responses.explain_cdt()
+      if (q.includes('interes compuesto') || q.includes('compuesto')) return responses.explain_compound()
+      if (q.includes('accion') || q.includes('bolsa')) return responses.explain_stocks()
+      if (q.includes('tes') || q.includes('bono')) return responses.explain_tes()
+      if (q.includes('fondo')) return responses.explain_funds()
+      
+      return `Claro! Para explicarte como funciona, necesito saber de que tema especifico:
 
-**Los tipos de riesgo principales:**
-
-- **Riesgo de mercado** - El mercado en general baja (como en 2008 o 2020)
-- **Riesgo especifico** - Una empresa o sector en particular tiene problemas
-- **Riesgo de inflacion** - Tu rendimiento no supera la inflacion
-- **Riesgo cambiario** - El dolar sube o baja vs el peso
-
-**Como manejar el riesgo:**
-
-1. **Diversifica** - No pongas todo en una sola inversion
-2. **Invierte a largo plazo** - El tiempo suaviza las caidas
-3. **Ten un fondo de emergencia** - Para no vender en mal momento
-4. **Conoce tu tolerancia** - Invierte segun tu perfil, no segun la moda
-
-${perfil !== 'general' ? `Tu perfil ${perfil} indica que tu tolerancia al riesgo es ${perfil === 'Conservador' ? 'baja - y esta bien! Mejor dormir tranquilo' : perfil === 'Agresivo' ? 'alta - puedes aprovechar oportunidades que otros no pueden' : 'moderada - el balance es tu fortaleza'}.` : ''}
-
-Algo que te genere curiosidad o preocupacion sobre el riesgo?`
-}
-
-function getInflationResponse() {
-  return `La inflacion es el "enemigo silencioso" de tu dinero. Dejame explicarte por que importa tanto:
-
-**Que es la inflacion?**
-Es cuando los precios suben con el tiempo. Lo que hoy compras con $1 millon, en 10 anos te costara mas.
-
-**En Colombia:**
-- Historicamente: 4-7% anual
-- 2023-2024: Estuvo alta (10-13%)
-- 2025: Bajando hacia 5-6%
-
-**Por que importa para tus inversiones:**
-
-Si tu dinero esta en una cuenta de ahorros al 1% y la inflacion es 6%, estas PERDIENDO 5% de poder adquisitivo cada ano.
-
-| Escenario | Rendimiento | Inflacion | Ganancia REAL |
-|-----------|-------------|-----------|---------------|
-| Cuenta ahorros | 1% | 6% | -5% |
-| CDT | 12% | 6% | +6% |
-| ETF | 15% | 6% | +9% |
-
-**Como protegerte:**
-1. Invierte en algo que rinda MAS que la inflacion
-2. CDTs actuales (11-13%) estan ganandole a la inflacion
-3. Acciones y ETFs historicamente superan la inflacion a largo plazo
-4. Los TES UVR se ajustan automaticamente por inflacion
-
-En el simulador del Dashboard puedes ver el "valor real" de tu inversion, que es tu dinero ajustado por inflacion. Muy util para tomar decisiones!
-
-Quieres que calculemos algo especifico?`
-}
-
-function getDiversificationResponse(perfil) {
-  return `${randomPick(PERSONALITY.greetings)} La diversificacion es probablemente el consejo mas importante en inversiones. Es la unica "comida gratis" que existe!
-
-**Por que diversificar?**
-Ninguna inversion es perfecta. Cuando una baja, otra puede subir. Al combinarlas, reduces el riesgo sin sacrificar tanto rendimiento.
-
-**Niveles de diversificacion:**
-
-1. **Por tipo de activo**
-   - Renta fija (CDTs, bonos)
-   - Renta variable (acciones, ETFs)
-   - Inmuebles (si tienes capital)
-
-2. **Por geografia**
-   - Colombia
-   - Estados Unidos
-   - Mercados globales
-
-3. **Por sector**
-   - Tecnologia
-   - Finanzas
-   - Salud
-   - Consumo
-
-**Ejemplo de portafolio diversificado ${perfil !== 'general' ? `para ${perfil}` : ''}:**
-
-${perfil === 'Conservador' ? 
-  '- 60% CDTs (diferentes bancos y plazos)\n- 25% Bonos TES\n- 15% Fondo mixto o ETF conservador' :
-  perfil === 'Agresivo' ?
-  '- 20% CDT (liquidez)\n- 40% ETF global (VOO/VTI)\n- 25% ETF crecimiento (QQQ)\n- 15% Acciones individuales' :
-  '- 40% CDTs y bonos\n- 35% ETF global (ACWI/VOO)\n- 25% Fondo mixto local'}
-
-**Regla simple:** No mas del 10-15% en una sola inversion, ni mas del 30% en un sector.
-
-Te ayudo a armar un portafolio diversificado para ti?`
-}
-
-function getDefaultResponse(perfil) {
-  return `Gracias por tu mensaje! Como tu asesor financiero personal, puedo ayudarte con muchos temas:
-
-**Inversiones:**
-- CDTs, fondos, ETFs, acciones
-- Recomendaciones segun tu perfil
-- Como empezar a invertir
-
-**Ahorro:**
-- Estrategias para ahorrar mas
-- Fondo de emergencia
-- Metas financieras
-
-**Conceptos:**
+- CDTs (certificados de deposito)
+- ETFs (fondos cotizados)
+- Acciones (bolsa de valores)
 - Interes compuesto
-- Riesgo y diversificacion
-- Inflacion
+- Fondos de inversion
+- Bonos TES
 
-${perfil !== 'general' ? `Recuerda que ya conozco tu perfil (${perfil}), asi que mis consejos estan personalizados para ti.` : 'Te recomiendo hacer el test de perfil en "Mi Perfil" para que pueda darte consejos mas personalizados.'}
-
-**Algunas preguntas que me hacen seguido:**
-- "En que puedo invertir con 5 millones?"
-- "Como funciona el interes compuesto?"
-- "Que es mejor, CDT o fondos?"
-- "Como empiezo a invertir siendo principiante?"
-
-Que te gustaria explorar?`
+Cual te interesa?`
+    }
+  }
+  
+  // Get response for detected intent
+  const responseFunc = responses[intent] || responses.general
+  return responseFunc()
 }
+
+export default useAdvisor
