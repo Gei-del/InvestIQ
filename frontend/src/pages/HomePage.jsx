@@ -4,7 +4,12 @@ const features = [
   {
     icon: '🧠',
     title: 'Machine Learning',
-    desc: 'Clasificación de perfil con DecisionTree entrenado con datos representativos del mercado colombiano.',
+    desc: 'Clasificacion de perfil con DecisionTree entrenado con datos representativos del mercado colombiano.',
+  },
+  {
+    icon: '💬',
+    title: 'Asesor IA',
+    desc: 'Conversa con nuestro asistente inteligente para resolver tus dudas sobre inversiones y finanzas.',
   },
   {
     icon: '📊',
@@ -13,13 +18,8 @@ const features = [
   },
   {
     icon: '📈',
-    title: 'Simulador',
-    desc: 'Proyecta el crecimiento de tu inversión con interés compuesto ajustado por inflación.',
-  },
-  {
-    icon: '🔍',
-    title: 'Análisis Visual',
-    desc: 'Gráficas comparativas de portafolios y evolución del capital en el tiempo.',
+    title: 'Simulador Avanzado',
+    desc: 'Compara escenarios, calcula metas financieras y proyecta tu inversion con interes compuesto.',
   },
 ]
 
@@ -86,10 +86,13 @@ export default function HomePage() {
             style={{ animationDelay: '240ms' }}
           >
             <Link to="/assessment" className="btn-primary text-base px-8 py-4">
-              Analizar mi perfil →
+              Analizar mi perfil
             </Link>
-            <Link to="/dashboard" className="btn-secondary text-base px-8 py-4">
-              Ver Dashboard
+            <Link to="/advisor" className="btn-secondary text-base px-8 py-4 flex items-center gap-2">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+              </svg>
+              Hablar con Asesor IA
             </Link>
           </div>
 

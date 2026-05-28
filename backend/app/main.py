@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.routes import profile_router, simulation_router, health_router
+from app.routes import profile_router, simulation_router, health_router, chat_router
 from app.ml.ml_model import get_model
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -68,6 +68,7 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(profile_router)
 app.include_router(simulation_router)
+app.include_router(chat_router)
 
 
 # ── Global Exception Handler ──────────────────────────────────────────────────

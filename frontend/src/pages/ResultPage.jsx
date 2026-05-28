@@ -1,4 +1,5 @@
 import { useLocation, useNavigate, Link } from 'react-router-dom'
+import { useEffect } from 'react'
 import ProfileBadge from '../components/ProfileBadge'
 import RecommendationCard from '../components/RecommendationCard'
 import ProfileChart from '../charts/ProfileChart'
@@ -7,6 +8,22 @@ import ComparisonChart from '../charts/ComparisonChart'
 export default function ResultPage() {
   const { state } = useLocation()
   const navigate = useNavigate()
+
+  // Save profile to localStorage for advisor and dashboard context
+  useEffect(() => {
+    if (state?.result?.perfil) {
+      try {
+        localStorage.setItem('investiq_profile', JSON.stringify({
+          perfil: state.result.perfil,
+          score: state.result.score,
+          probabilidades: state.result.probabilidades,
+          timestamp: new Date().toISOString()
+        }))
+      } catch {
+        // Ignore storage errors
+      }
+    }
+  }, [state])
 
   if (!state?.result) {
     return (
@@ -98,17 +115,26 @@ export default function ResultPage() {
         {/* Actions */}
         <div className="mt-10 flex flex-wrap gap-3 justify-center animate-in" style={{ animationDelay: '400ms' }}>
           <Link
-            to="/dashboard"
-            state={{ perfil, recomendaciones }}
-            className="btn-primary px-8 py-3"
+            to="/advisor"
+            className="btn-primary px-8 py-3 flex items-center gap-2"
           >
-            Ver Dashboard completo →
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+            </svg>
+            Hablar con Asesor IA
+          </Link>
+          <Link
+            to="/dashboard"
+            state={{ perfil, recomendaciones, score }}
+            className="btn-secondary px-8 py-3"
+          >
+            Ver Dashboard completo
           </Link>
           <button
             onClick={() => navigate('/assessment')}
             className="btn-secondary px-8 py-3"
           >
-            Repetir análisis
+            Repetir analisis
           </button>
         </div>
       </div>
